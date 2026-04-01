@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "org.example.proto";
+option java_outer_classname = "TaxiProto";
+
+service TaskFormatter {
+    rpc InitData(InitRequest) returns (InitResponse);
+
+    rpc GetNextSubtask(Empty) returns (SubtaskResponse);
+
+    rpc SubmitResult(ResultRequest) returns (ResultResponse);
+
+    rpc GetFinalResult(Empty) returns (FinalResultResponse);
+}
+
+service TaskDistributor {
+    rpc RequestSubtask(DistributorRequest) returns (SubtaskData);
+
+    rpc SendTaskToWorker(TaskAssignment) returns (AssignmentResponse);
+
+    // Прокси результата вычислятора к формирователю (агрегация минимума)
+    rpc SubmitWorkerResult(ResultRequest) returns (ResultResponse);
+}
+
+message InitRequest {
+    repeated int32 adjMatrix = 1;
+    int32 matrixSize = 2;
+    repeated int32 taxiPositions = 3;
+    repeated Passenger passengers = 4;
+}
+
+message Passenger {
+    int32 startNode = 1;
+    int32 endNode = 2;
+}
+
+message InitResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message Empty {}
+
+message SubtaskResponse {
+    bool hasTask = 1;
+    string variant = 2;
+    int32 taskNumber = 3;
+    repeated int32 taxiPositions = 4;
+    repeated Passenger passengers = 5;
+    repeated int32 adjMatrix = 6;
+    int32 matrixSize = 7;
+}
+
+message ResultRequest {
+    int32 taskNumber = 1;
+    string variant = 2;
+    int32 cost = 3;
+}
+
+message ResultResponse {
+    bool accepted = 1;
+}
+
+message FinalResultResponse {
+    bool ready = 1;
+    int32 minCost = 2;
+    string bestVariant = 3;
+    int32 bestTaskNumber = 4;
+    int32 processedResults = 5;
+    int32 totalTasks = 6;
+}
+
+message DistributorRequest {
+    string workerId = 1;
+}
+
+message SubtaskData {
+    string variant = 1;
+    int32 taskNumber = 2;
+    repeated int32 taxiPositions = 3;
+    repeated Passenger passengers = 4;
+    repeated int32 adjMatrix = 5;
+    int32 matrixSize = 6;
+    bool has_task = 7;
+}
+
+message TaskAssignment {
+    string workerId = 1;
+    SubtaskData task = 2;
+}
+
+message AssignmentResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+service WorkerService {
+    rpc SendTask(TaskAssignment) returns (ComputationResult);
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message HeartbeatRequest {
+    string workerId = 1;
+}
+
+message HeartbeatResponse {
+    bool alive = 1;
+    int32 tasksProcessed = 2;
+}
+
+message ComputationResult {
+    string workerId = 1;
+    int32 taskNumber = 2;
+    string variant = 3;
+    int32 cost = 4;
+    int64 computationTimeMs = 5;
+}
