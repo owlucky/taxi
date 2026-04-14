@@ -9,10 +9,7 @@ import java.nio.file.Paths;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Вычислятор: запрашивает подзадачи у распределителя, считает стоимость через JAR с TaxiCostCalculator,
- * отправляет результат обратно (через распределитель — формирователю).
- */
+
 public class WorkerServer {
 
     private final String workerId = "worker-" + UUID.randomUUID().toString().substring(0, 8);
@@ -74,22 +71,31 @@ public class WorkerServer {
                             .build();
                     SubtaskData task = distributor.requestSubtask(req);
 
-                    if (!task.getHasTask() || task.getVariant().isEmpty()) {
+                    if (!task.getHasTask() || task.getVariantsCount() == 0) {
                         Thread.sleep(400);
                         continue;
                     }
 
                     long t0 = System.currentTimeMillis();
-                    int cost = invoker.compute(task);
+                    int bestCost = Integer.MAX_VALUE;
+                    String bestVariant = "";
+                    for (String variant : task.getVariantsList()) {
+                        int cost = invoker.compute(task, variant);
+                        if (cost < bestCost) {
+                            bestCost = cost;
+                            bestVariant = variant;
+                        }
+                    }
                     long dt = System.currentTimeMillis() - t0;
 
                     System.out.println("Подзадача #" + task.getTaskNumber()
-                            + " \"" + task.getVariant() + "\" -> стоимость " + cost + " (" + dt + " мс)");
+                            + " варианты " + task.getVariantsList()
+                            + " -> минимум " + bestCost + " (лучший: \"" + bestVariant + "\", " + dt + " мс)");
 
                     ResultRequest resultReq = ResultRequest.newBuilder()
                             .setTaskNumber(task.getTaskNumber())
-                            .setVariant(task.getVariant())
-                            .setCost(cost)
+                            .setVariant(bestVariant)
+                            .setCost(bestCost)
                             .build();
                     distributor.submitWorkerResult(resultReq);
 

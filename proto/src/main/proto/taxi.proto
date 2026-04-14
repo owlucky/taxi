@@ -44,7 +44,7 @@ message Empty {}
 
 message SubtaskResponse {
     bool hasTask = 1;
-    string variant = 2;
+    repeated string variants = 2;
     int32 taskNumber = 3;
     repeated int32 taxiPositions = 4;
     repeated Passenger passengers = 5;
@@ -76,7 +76,7 @@ message DistributorRequest {
 }
 
 message SubtaskData {
-    string variant = 1;
+    repeated string variants = 1;
     int32 taskNumber = 2;
     repeated int32 taxiPositions = 3;
     repeated Passenger passengers = 4;

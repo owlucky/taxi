@@ -10,11 +10,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
+    private static final int TASK_BATCH_SIZE = 3;
 
     private int[][] adjMatrix;
     private List<Integer> taxiPositions;
     private List<Passenger> passengers;
-    private List<String> taskVariants = new ArrayList<>();
+    private List<List<String>> taskBatches = new ArrayList<>();
     private int currentTaskIndex = 0;
     private List<SubtaskResult> results = new ArrayList<>();
     private SubtaskResult bestResult = null;
@@ -37,7 +38,7 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
 
         currentTaskIndex = 0;
         results.clear();
-        taskVariants.clear();
+        taskBatches.clear();
         bestResult = null;
 
         int size = request.getMatrixSize();
@@ -64,7 +65,7 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
 
         InitResponse response = InitResponse.newBuilder()
                 .setSuccess(true)
-                .setMessage("Данные загружены. Всего подзадач: " + taskVariants.size())
+                .setMessage("Данные загружены. Всего подзадач (батчей): " + taskBatches.size())
                 .build();
 
         responseObserver.onNext(response);
@@ -73,7 +74,7 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
 
     @Override
     public synchronized void getNextSubtask(Empty request, StreamObserver<SubtaskResponse> responseObserver) {
-        if (currentTaskIndex >= taskVariants.size()) {
+        if (currentTaskIndex >= taskBatches.size()) {
             responseObserver.onNext(SubtaskResponse.newBuilder()
                     .setHasTask(false)
                     .build());
@@ -81,7 +82,7 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
             return;
         }
 
-        String variant = taskVariants.get(currentTaskIndex);
+        List<String> variants = taskBatches.get(currentTaskIndex);
         int taskIndex = currentTaskIndex;
         currentTaskIndex++;
 
@@ -102,7 +103,7 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
 
         SubtaskResponse response = SubtaskResponse.newBuilder()
                 .setHasTask(true)
-                .setVariant(variant)
+                .addAllVariants(variants)
                 .setTaskNumber(taskIndex)
                 .addAllTaxiPositions(taxiPositions)
                 .addAllPassengers(protoPassengers)
@@ -133,9 +134,9 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
             );
         }
 
-        if (results.size() == taskVariants.size()) {
+        if (results.size() == taskBatches.size()) {
             System.out.println("\n=== ВСЕ ЗАДАЧИ РЕШЕНЫ ===");
-            System.out.println("Найдено решений: " + results.size());
+            System.out.println("Найдено решений (по батчам): " + results.size());
 
             if (bestResult != null) {
                 System.out.println("ОТВЕТ: минимальная суммарная стоимость = " + bestResult.cost);
@@ -155,9 +156,9 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
     @Override
     public synchronized void getFinalResult(Empty request, StreamObserver<FinalResultResponse> responseObserver) {
         FinalResultResponse.Builder builder = FinalResultResponse.newBuilder()
-                .setReady(results.size() == taskVariants.size() && !taskVariants.isEmpty())
+                .setReady(results.size() == taskBatches.size() && !taskBatches.isEmpty())
                 .setProcessedResults(results.size())
-                .setTotalTasks(taskVariants.size());
+                .setTotalTasks(taskBatches.size());
 
         if (bestResult != null) {
             builder.setMinCost(bestResult.cost)
@@ -175,14 +176,13 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
         int passengerCount = passengers.size();
 
         List<String> allNumbers = generateNumbers(taxiCount, passengerCount);
-        taskVariants = allNumbers;
+        taskBatches = splitIntoBatches(allNumbers, TASK_BATCH_SIZE);
 
-        System.out.println("Сгенерировано подзадач: " + taskVariants.size());
+        System.out.println("Сгенерировано комбинаций: " + allNumbers.size());
+        System.out.println("Сгенерировано подзадач-батчей по " + TASK_BATCH_SIZE + ": " + taskBatches.size());
     }
 
-    /**
-     * Числа от 0 до X^Y-1 в системе счисления X, длина строки Y (ведущие нули).
-     */
+
     private List<String> generateNumbers(int base, int length) {
         if (base < 2 || base > 36) {
             throw new IllegalArgumentException("Число такси (основание) должно быть от 2 до 36");
@@ -210,6 +210,15 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
         }
         sb.append(s);
         return sb.toString();
+    }
+
+    private List<List<String>> splitIntoBatches(List<String> variants, int batchSize) {
+        List<List<String>> batches = new ArrayList<>();
+        for (int i = 0; i < variants.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, variants.size());
+            batches.add(new ArrayList<>(variants.subList(i, end)));
+        }
+        return batches;
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {

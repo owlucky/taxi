@@ -15,9 +15,7 @@ public class TaxiCostCalculator {
         String value();
     }
 
-    /**
-     * Класс пассажира (дублируем, чтобы не зависеть от proto)
-     */
+
     public static class Passenger {
         private int startNode;
         private int endNode;
@@ -41,10 +39,7 @@ public class TaxiCostCalculator {
         }
     }
 
-    /**
-     * Метод расчета стоимости (с аннотациями @Param)
-     * Именно этот метод будет вызываться через рефлексию в воркере
-     */
+
     public static int calculateCost(
             @Param("variant") String variant,
             @Param("taxiPositions") List<Integer> taxiPositions,
@@ -66,7 +61,7 @@ public class TaxiCostCalculator {
             int taxiNode = taxiPositions.get(taxiIndex);
             Passenger passenger = passengers.get(i);
 
-            // Проверка границ матрицы
+
             if (taxiNode >= adjMatrix.length || passenger.getStartNode() >= adjMatrix.length ||
                     passenger.getEndNode() >= adjMatrix.length) {
                 throw new IllegalArgumentException("Node index out of matrix bounds");
@@ -81,9 +76,7 @@ public class TaxiCostCalculator {
         return totalCost;
     }
 
-    /**
-     * Версия метода для обратной совместимости (без аннотаций)
-     */
+
     public static int calculateCostSimple(
             String variant,
             List<Integer> taxiPositions,
@@ -92,9 +85,7 @@ public class TaxiCostCalculator {
         return calculateCost(variant, taxiPositions, passengers, adjMatrix);
     }
 
-    /**
-     * Получить информацию о библиотеке
-     */
+
     public static String getLibraryInfo() {
         return "TaxiCostCalculator v1.0 (with @Param annotations)";
     }

@@ -8,16 +8,15 @@ import io.grpc.stub.StreamObserver;
 import org.example.proto.*;
 
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class TaskDistributorImpl extends TaskDistributorGrpc.TaskDistributorImplBase {
 
     private final ManagedChannel formatterChannel;
     private final TaskFormatterGrpc.TaskFormatterBlockingStub formatterStub;
 
-    private Map<String, SubtaskData> workerTasks = new HashMap<>();
+    private final Map<String, SubtaskData> workerTasks = new ConcurrentHashMap<>();
 
     public TaskDistributorImpl() {
         this("localhost", 8081);
@@ -42,7 +41,7 @@ public class TaskDistributorImpl extends TaskDistributorGrpc.TaskDistributorImpl
 
             SubtaskData data = SubtaskData.newBuilder()
                     .setHasTask(true)
-                    .setVariant(response.getVariant())
+                    .addAllVariants(response.getVariantsList())
                     .setTaskNumber(response.getTaskNumber())
                     .addAllTaxiPositions(response.getTaxiPositionsList())
                     .addAllPassengers(response.getPassengersList())
@@ -73,7 +72,6 @@ public class TaskDistributorImpl extends TaskDistributorGrpc.TaskDistributorImpl
                                  StreamObserver<AssignmentResponse> responseObserver) {
         System.out.println("Отправляем задачу вычислятору " + request.getWorkerId());
 
-        // Здесь должна быть логика отправки задачи конкретному вычислятору?
 
         AssignmentResponse response = AssignmentResponse.newBuilder()
                 .setSuccess(true)

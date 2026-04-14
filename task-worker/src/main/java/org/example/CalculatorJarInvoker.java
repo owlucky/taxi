@@ -11,10 +11,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Загружает {@code org.example.calculator.TaxiCostCalculator} из внешнего JAR и вызывает расчёт.
- * Контракт JAR: статический метод {@code calculateCostSimple(String, List, List, int[][])}.
- */
+
 public final class CalculatorJarInvoker implements AutoCloseable {
 
     private final URLClassLoader classLoader;
@@ -38,7 +35,7 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         }
     }
 
-    public int compute(SubtaskData task) throws Exception {
+    public int compute(SubtaskData task, String variant) throws Exception {
         Class<?> calcClass = Class.forName("org.example.calculator.TaxiCostCalculator", true, classLoader);
         Class<?> passClass = Class.forName("org.example.calculator.TaxiCostCalculator$Passenger", true, classLoader);
 
@@ -59,7 +56,6 @@ public final class CalculatorJarInvoker implements AutoCloseable {
             passengers.add(pass);
         }
 
-        String variant = task.getVariant();
         List<Integer> taxiPositions = task.getTaxiPositionsList();
 
         Method target = findCalculateMethod(calcClass);
