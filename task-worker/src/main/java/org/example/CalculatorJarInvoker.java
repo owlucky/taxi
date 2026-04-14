@@ -35,7 +35,10 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         }
     }
 
-    public int compute(SubtaskData task, String variant) throws Exception {
+    /**
+     * Возвращает объект с результатом калькулятора (тип из JAR, например {@code BatchMinResult}).
+     */
+    public Object invokeBatch(SubtaskData task) throws Exception {
         Class<?> calcClass = Class.forName("org.example.calculator.TaxiCostCalculator", true, classLoader);
         Class<?> passClass = Class.forName("org.example.calculator.TaxiCostCalculator$Passenger", true, classLoader);
 
@@ -56,19 +59,17 @@ public final class CalculatorJarInvoker implements AutoCloseable {
             passengers.add(pass);
         }
 
-        List<Integer> taxiPositions = task.getTaxiPositionsList();
-
-        Method target = findCalculateMethod(calcClass);
-        return (int) target.invoke(null, variant, taxiPositions, passengers, adjMatrix);
+        Method target = findBatchMethod(calcClass);
+        return target.invoke(null, task.getVariantsList(), task.getTaxiPositionsList(), passengers, adjMatrix);
     }
 
-    private static Method findCalculateMethod(Class<?> calcClass) throws NoSuchMethodException {
+    private static Method findBatchMethod(Class<?> calcClass) throws NoSuchMethodException {
         for (Method method : calcClass.getMethods()) {
-            if (!"calculateCostSimple".equals(method.getName()) || method.getParameterCount() != 4) {
+            if (!"calculateBatchMinSimple".equals(method.getName()) || method.getParameterCount() != 4) {
                 continue;
             }
             Class<?>[] pt = method.getParameterTypes();
-            if (pt[0] == String.class
+            if (List.class.isAssignableFrom(pt[0])
                     && List.class.isAssignableFrom(pt[1])
                     && List.class.isAssignableFrom(pt[2])
                     && pt[3] == int[][].class) {
@@ -76,11 +77,11 @@ public final class CalculatorJarInvoker implements AutoCloseable {
             }
         }
         for (Method method : calcClass.getMethods()) {
-            if (!"calculateCost".equals(method.getName()) || method.getParameterCount() != 4) {
+            if (!"calculateBatchMin".equals(method.getName()) || method.getParameterCount() != 4) {
                 continue;
             }
             Class<?>[] pt = method.getParameterTypes();
-            if (pt[0] == String.class
+            if (List.class.isAssignableFrom(pt[0])
                     && List.class.isAssignableFrom(pt[1])
                     && List.class.isAssignableFrom(pt[2])
                     && pt[3] == int[][].class) {
@@ -88,7 +89,7 @@ public final class CalculatorJarInvoker implements AutoCloseable {
             }
         }
         throw new NoSuchMethodException(
-                "В JAR нужен статический calculateCostSimple(String, List, List, int[][]) или calculateCost с теми же типами");
+                "В JAR нужен статический calculateBatchMinSimple(List, List, List, int[][]) или calculateBatchMin с теми же типами");
     }
 
     @Override

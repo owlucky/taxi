@@ -4,6 +4,8 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.example.proto.*;
 
+import java.lang.reflect.Method;
+
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.UUID;
@@ -77,25 +79,19 @@ public class WorkerServer {
                     }
 
                     long t0 = System.currentTimeMillis();
-                    int bestCost = Integer.MAX_VALUE;
-                    String bestVariant = "";
-                    for (String variant : task.getVariantsList()) {
-                        int cost = invoker.compute(task, variant);
-                        if (cost < bestCost) {
-                            bestCost = cost;
-                            bestVariant = variant;
-                        }
-                    }
+                    Object batchResult = invoker.invokeBatch(task);
+                    String variant = readVariantFromCalculatorResult(batchResult);
+                    int cost = readCostFromCalculatorResult(batchResult);
                     long dt = System.currentTimeMillis() - t0;
 
                     System.out.println("Подзадача #" + task.getTaskNumber()
                             + " варианты " + task.getVariantsList()
-                            + " -> минимум " + bestCost + " (лучший: \"" + bestVariant + "\", " + dt + " мс)");
+                            + " -> стоимость " + cost + " (variant \"" + variant + "\", " + dt + " мс)");
 
                     ResultRequest resultReq = ResultRequest.newBuilder()
                             .setTaskNumber(task.getTaskNumber())
-                            .setVariant(bestVariant)
-                            .setCost(bestCost)
+                            .setVariant(variant)
+                            .setCost(cost)
                             .build();
                     distributor.submitWorkerResult(resultReq);
 
@@ -109,5 +105,20 @@ public class WorkerServer {
                 }
             }
         }
+    }
+
+
+    private static String readVariantFromCalculatorResult(Object batchResult) throws Exception {
+        Method m = batchResult.getClass().getMethod("getBestVariant");
+        return (String) m.invoke(batchResult);
+    }
+
+    private static int readCostFromCalculatorResult(Object batchResult) throws Exception {
+        Method m = batchResult.getClass().getMethod("getMinCost");
+        Object v = m.invoke(batchResult);
+        if (v instanceof Integer) {
+            return (Integer) v;
+        }
+        return ((Number) v).intValue();
     }
 }
