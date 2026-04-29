@@ -5,6 +5,7 @@ import io.grpc.ManagedChannelBuilder;
 import org.example.proto.*;
 
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -71,27 +72,35 @@ public class WorkerServer {
                     DistributorRequest req = DistributorRequest.newBuilder()
                             .setWorkerId(workerId)
                             .build();
-                    SubtaskData task = distributor.requestSubtask(req);
+                    UniversalTask task = distributor.requestSubtask(req);
 
-                    if (!task.getHasTask() || task.getVariantsCount() == 0) {
+                    if (!task.getHasTask()) {
                         Thread.sleep(400);
                         continue;
                     }
 
                     long t0 = System.currentTimeMillis();
                     Object batchResult = invoker.invokeBatch(task);
-                    String variant = readVariantFromCalculatorResult(batchResult);
-                    int cost = readCostFromCalculatorResult(batchResult);
+                    String variant = readStringResult(batchResult, "getResultLabel", "getBestVariant", "");
+                    int cost = readIntResult(batchResult, "getResultCost", "getMinCost", Integer.MAX_VALUE);
+                    long score = readLongResult(batchResult, "getScore", "getResultCost", "getMinCost", cost);
+                    byte[] payload = readBytesResult(batchResult, "getResultPayload", "toPayloadBytes");
                     long dt = System.currentTimeMillis() - t0;
 
                     System.out.println("Подзадача #" + task.getTaskNumber()
-                            + " варианты " + task.getVariantsList()
-                            + " -> стоимость " + cost + " (variant \"" + variant + "\", " + dt + " мс)");
+                            + " kind=" + task.getTaskKind()
+                            + " -> стоимость " + cost + " (label \"" + variant + "\", " + dt + " мс)");
 
-                    ResultRequest resultReq = ResultRequest.newBuilder()
+                    UniversalResult resultReq = UniversalResult.newBuilder()
+                            .setWorkerId(workerId)
                             .setTaskNumber(task.getTaskNumber())
-                            .setVariant(variant)
-                            .setCost(cost)
+                            .setTaskKind(task.getTaskKind())
+                            .setSuccess(true)
+                            .setMessage("OK")
+                            .setResultLabel(variant)
+                            .setScore(score)
+                            .setResultPayload(com.google.protobuf.ByteString.copyFrom(payload))
+                            .setComputationTimeMs(dt)
                             .build();
                     distributor.submitWorkerResult(resultReq);
 
@@ -108,17 +117,63 @@ public class WorkerServer {
     }
 
 
-    private static String readVariantFromCalculatorResult(Object batchResult) throws Exception {
-        Method m = batchResult.getClass().getMethod("getBestVariant");
-        return (String) m.invoke(batchResult);
+    private static String readStringResult(Object target, String preferredMethod, String fallbackMethod, String defaultValue) {
+        Object value = invokeOptionalNoArg(target, preferredMethod);
+        if (value == null) {
+            value = invokeOptionalNoArg(target, fallbackMethod);
+        }
+        return value == null ? defaultValue : String.valueOf(value);
     }
 
-    private static int readCostFromCalculatorResult(Object batchResult) throws Exception {
-        Method m = batchResult.getClass().getMethod("getMinCost");
-        Object v = m.invoke(batchResult);
-        if (v instanceof Integer) {
-            return (Integer) v;
+    private static int readIntResult(Object target, String preferredMethod, String fallbackMethod, int defaultValue) {
+        Object value = invokeOptionalNoArg(target, preferredMethod);
+        if (value == null) {
+            value = invokeOptionalNoArg(target, fallbackMethod);
         }
-        return ((Number) v).intValue();
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        return defaultValue;
+    }
+
+    private static long readLongResult(Object target,
+                                       String preferredMethod,
+                                       String fallbackMethod1,
+                                       String fallbackMethod2,
+                                       long defaultValue) {
+        Object value = invokeOptionalNoArg(target, preferredMethod);
+        if (value == null) {
+            value = invokeOptionalNoArg(target, fallbackMethod1);
+        }
+        if (value == null) {
+            value = invokeOptionalNoArg(target, fallbackMethod2);
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        return defaultValue;
+    }
+
+    private static byte[] readBytesResult(Object target, String preferredMethod, String fallbackMethod) {
+        Object value = invokeOptionalNoArg(target, preferredMethod);
+        if (value == null) {
+            value = invokeOptionalNoArg(target, fallbackMethod);
+        }
+        if (value instanceof byte[]) {
+            return (byte[]) value;
+        }
+        if (value != null) {
+            return String.valueOf(value).getBytes(StandardCharsets.UTF_8);
+        }
+        return new byte[0];
+    }
+
+    private static Object invokeOptionalNoArg(Object target, String methodName) {
+        try {
+            Method m = target.getClass().getMethod(methodName);
+            return m.invoke(target);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
     }
 }

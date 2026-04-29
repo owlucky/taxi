@@ -2,13 +2,12 @@ package org.example;
 
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import org.example.proto.Passenger;
+import com.google.protobuf.ByteString;
 import org.example.proto.InitRequest;
 import org.example.proto.InitResponse;
 import org.example.proto.Empty;
 import org.example.proto.FinalResultResponse;
 import org.example.proto.TaskFormatterGrpc;
-import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
 public class TestClient {
@@ -36,22 +35,12 @@ public class TestClient {
             }
         }
 
-        Passenger passenger1 = Passenger.newBuilder()
-                .setStartNode(0)
-                .setEndNode(2)
-                .build();
-
-        Passenger passenger2 = Passenger.newBuilder()
-                .setStartNode(1)
-                .setEndNode(0)
-                .build();
+        String initPayload = "matrixSize=3;taxiPositions=0,1;passengers=0-2,1-0;adjMatrix="
+                + joinInts(flatMatrix);
 
         InitRequest initRequest = InitRequest.newBuilder()
-                .addAllAdjMatrix(flatMatrix)
-                .setMatrixSize(3)
-                .addAllTaxiPositions(Arrays.asList(0, 1))
-                .addPassengers(passenger1)
-                .addPassengers(passenger2)
+                .setTaskKind("taxi-min-cost")
+                .setInitPayload(ByteString.copyFromUtf8(initPayload))
                 .build();
 
         InitResponse initResponse = stub.initData(initRequest);
@@ -65,8 +54,8 @@ public class TestClient {
             FinalResultResponse finalResult = stub.getFinalResult(emptyRequest);
             if (finalResult.getReady()) {
                 System.out.println("\n=== ФИНАЛЬНЫЙ ОТВЕТ ===");
-                System.out.println("Минимальная суммарная стоимость: " + finalResult.getMinCost());
-                System.out.println("Лучшая комбинация (variant): " + finalResult.getBestVariant());
+                System.out.println("Минимальная суммарная стоимость: " + finalResult.getBestScore());
+                System.out.println("Лучшая комбинация (variant): " + finalResult.getBestLabel());
                 System.out.println("Номер подзадачи: " + finalResult.getBestTaskNumber());
                 break;
             }
@@ -83,5 +72,16 @@ public class TestClient {
         channel.awaitTermination(5, TimeUnit.SECONDS);
 
         System.out.println("\n=== ТЕСТ ЗАВЕРШЕН ===");
+    }
+
+    private static String joinInts(java.util.List<Integer> values) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append(values.get(i));
+        }
+        return sb.toString();
     }
 }

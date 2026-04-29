@@ -4,12 +4,14 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 
+@TargetClass
 public class TaxiCostCalculator {
-    private static final int DEFAULT_COST = Integer.MAX_VALUE;
+    private static final int AMOUNT_OF_THREADS = Math.max(1, Runtime.getRuntime().availableProcessors());
 
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.PARAMETER)
@@ -56,6 +58,19 @@ public class TaxiCostCalculator {
 
         public int getMinCost() {
             return minCost;
+        }
+
+        public String getResultLabel() {
+            return bestVariant;
+        }
+
+        public long getScore() {
+            return minCost;
+        }
+
+        public byte[] getResultPayload() {
+            String payload = "{\"bestVariant\":\"" + bestVariant + "\",\"minCost\":" + minCost + "}";
+            return payload.getBytes(StandardCharsets.UTF_8);
         }
     }
 
@@ -106,6 +121,7 @@ public class TaxiCostCalculator {
     }
 
 
+    @TargetMethod("batch")
     public static BatchMinResult calculateBatchMin(
             @Param("variants") List<String> variants,
             @Param("taxiPositions") List<Integer> taxiPositions,
@@ -116,28 +132,33 @@ public class TaxiCostCalculator {
             throw new IllegalArgumentException("Variants cannot be null or empty");
         }
 
-        List<VariantCostThread> threads = new ArrayList<>(variants.size());
-        for (String variant : variants) {
-            VariantCostThread t = new VariantCostThread(variant, taxiPositions, passengers, adjMatrix);
-            threads.add(t);
-            t.start();
+        int n = variants.size();
+        int threadCount = Math.min(AMOUNT_OF_THREADS, n);
+
+        List<VariantBatchThread> threads = new ArrayList<>(threadCount);
+        for (int t = 0; t < threadCount; t++) {
+            int from = t * n / threadCount;
+            int to = (t + 1) * n / threadCount;
+            VariantBatchThread worker = new VariantBatchThread(variants, from, to, taxiPositions, passengers, adjMatrix);
+            threads.add(worker);
+            worker.start();
         }
 
         int minCost = Integer.MAX_VALUE;
         String bestVariant = "";
-        for (VariantCostThread t : threads) {
+        for (VariantBatchThread worker : threads) {
             try {
-                t.join();
+                worker.join();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("Interrupted while waiting cost threads", e);
             }
-            if (t.getError() != null) {
-                throw new RuntimeException("Failed to compute variant " + t.getVariant(), t.getError());
+            if (worker.getError() != null) {
+                throw new RuntimeException("Failed to compute variants in range [" + worker.getFrom() + ", " + worker.getTo() + ")", worker.getError());
             }
-            if (t.getCost() < minCost) {
-                minCost = t.getCost();
-                bestVariant = t.getVariant();
+            if (worker.getMinCost() < minCost) {
+                minCost = worker.getMinCost();
+                bestVariant = worker.getBestVariant();
             }
         }
         return new BatchMinResult(bestVariant, minCost);
@@ -152,23 +173,32 @@ public class TaxiCostCalculator {
     }
 
 
+    @TargetMethod("libraryInfo")
     public static String getLibraryInfo() {
-        return "TaxiCostCalculator v1.1 (batch min in calculator)";
+        return "TaxiCostCalculator v1.2 (batch min, " + AMOUNT_OF_THREADS + " threads max)";
     }
 
-    private static final class VariantCostThread extends Thread {
-        private final String variant;
+
+    private static final class VariantBatchThread extends Thread {
+        private final List<String> variants;
+        private final int from;
+        private final int to;
         private final List<Integer> taxiPositions;
         private final List<Passenger> passengers;
         private final int[][] adjMatrix;
-        private int cost = DEFAULT_COST;
+        private String bestVariant = "";
+        private int minCost = Integer.MAX_VALUE;
         private RuntimeException error;
 
-        private VariantCostThread(String variant,
-                                  List<Integer> taxiPositions,
-                                  List<Passenger> passengers,
-                                  int[][] adjMatrix) {
-            this.variant = variant;
+        private VariantBatchThread(List<String> variants,
+                                   int from,
+                                   int to,
+                                   List<Integer> taxiPositions,
+                                   List<Passenger> passengers,
+                                   int[][] adjMatrix) {
+            this.variants = variants;
+            this.from = from;
+            this.to = to;
             this.taxiPositions = taxiPositions;
             this.passengers = passengers;
             this.adjMatrix = adjMatrix;
@@ -177,21 +207,36 @@ public class TaxiCostCalculator {
         @Override
         public void run() {
             try {
-                this.cost = calculateCost(variant, taxiPositions, passengers, adjMatrix);
+                for (int i = from; i < to; i++) {
+                    String variant = variants.get(i);
+                    int cost = calculateCost(variant, taxiPositions, passengers, adjMatrix);
+                    if (cost < minCost) {
+                        minCost = cost;
+                        bestVariant = variant;
+                    }
+                }
             } catch (RuntimeException e) {
                 this.error = e;
             }
         }
 
-        public String getVariant() {
-            return variant;
+        int getFrom() {
+            return from;
         }
 
-        public int getCost() {
-            return cost;
+        int getTo() {
+            return to;
         }
 
-        public RuntimeException getError() {
+        String getBestVariant() {
+            return bestVariant;
+        }
+
+        int getMinCost() {
+            return minCost;
+        }
+
+        RuntimeException getError() {
             return error;
         }
     }

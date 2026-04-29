@@ -6,7 +6,9 @@ import io.grpc.stub.StreamObserver;
 import org.example.proto.*;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
@@ -35,31 +37,30 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
     @Override
     public void initData(InitRequest request, StreamObserver<InitResponse> responseObserver) {
         System.out.println("Получены начальные данные...");
+        if (!"taxi-min-cost".equals(request.getTaskKind())) {
+            responseObserver.onNext(InitResponse.newBuilder()
+                    .setSuccess(false)
+                    .setMessage("Unsupported task kind: " + request.getTaskKind())
+                    .build());
+            responseObserver.onCompleted();
+            return;
+        }
 
         currentTaskIndex = 0;
         results.clear();
         taskBatches.clear();
         bestResult = null;
 
-        int size = request.getMatrixSize();
+        TaxiInitData initData = decodeTaxiInitData(request.getInitPayload().toString(StandardCharsets.UTF_8));
+        int size = initData.matrixSize;
         adjMatrix = new int[size][size];
-        List<Integer> flatMatrix = request.getAdjMatrixList();
-
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                adjMatrix[i][j] = flatMatrix.get(i * size + j);
+                adjMatrix[i][j] = initData.adjMatrixFlat.get(i * size + j);
             }
         }
-
-        taxiPositions = new ArrayList<>(request.getTaxiPositionsList());
-
-        passengers = new ArrayList<>();
-        for (org.example.proto.Passenger p : request.getPassengersList()) {
-            Passenger passenger = new Passenger();
-            passenger.setStartNode(p.getStartNode());
-            passenger.setEndNode(p.getEndNode());
-            passengers.add(passenger);
-        }
+        taxiPositions = initData.taxiPositions;
+        passengers = initData.passengers;
 
         generateAllTasks();
 
@@ -93,22 +94,13 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
             }
         }
 
-        List<org.example.proto.Passenger> protoPassengers = new ArrayList<>();
-        for (Passenger p : passengers) {
-            protoPassengers.add(org.example.proto.Passenger.newBuilder()
-                    .setStartNode(p.getStartNode())
-                    .setEndNode(p.getEndNode())
-                    .build());
-        }
-
         SubtaskResponse response = SubtaskResponse.newBuilder()
                 .setHasTask(true)
-                .addAllVariants(variants)
                 .setTaskNumber(taskIndex)
-                .addAllTaxiPositions(taxiPositions)
-                .addAllPassengers(protoPassengers)
-                .addAllAdjMatrix(flatMatrix)
-                .setMatrixSize(adjMatrix.length)
+                .setTaskKind("taxi-min-cost")
+                .setTaskPayload(com.google.protobuf.ByteString.copyFrom(
+                        encodeTaxiTaskPayload(variants, taxiPositions, passengers, flatMatrix, adjMatrix.length),
+                        StandardCharsets.UTF_8))
                 .build();
 
         responseObserver.onNext(response);
@@ -117,20 +109,22 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
 
     @Override
     public synchronized void submitResult(ResultRequest request, StreamObserver<ResultResponse> responseObserver) {
+        String resultVariant = request.getResultLabel();
+        int resultCost = (int) request.getScore();
         System.out.println("Получен результат: задача " + request.getTaskNumber() +
-                ", вариант " + request.getVariant() +
-                ", стоимость " + request.getCost());
+                ", вариант " + resultVariant +
+                ", стоимость " + resultCost);
 
         results.add(new SubtaskResult(
                 request.getTaskNumber(),
-                request.getVariant(),
-                request.getCost()
+                resultVariant,
+                resultCost
         ));
-        if (bestResult == null || request.getCost() < bestResult.cost) {
+        if (bestResult == null || resultCost < bestResult.cost) {
             bestResult = new SubtaskResult(
                     request.getTaskNumber(),
-                    request.getVariant(),
-                    request.getCost()
+                    resultVariant,
+                    resultCost
             );
         }
 
@@ -161,8 +155,8 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
                 .setTotalTasks(taskBatches.size());
 
         if (bestResult != null) {
-            builder.setMinCost(bestResult.cost)
-                    .setBestVariant(bestResult.variant)
+            builder.setBestScore(bestResult.cost)
+                    .setBestLabel(bestResult.variant)
                     .setBestTaskNumber(bestResult.taskNumber);
         }
 
@@ -220,6 +214,102 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
         }
         return batches;
     }
+
+    private String encodeTaxiTaskPayload(List<String> variants,
+                                         List<Integer> taxiPositions,
+                                         List<Passenger> passengerList,
+                                         List<Integer> flatMatrix,
+                                         int matrixSize) {
+        StringBuilder passengersEncoded = new StringBuilder();
+        for (int i = 0; i < passengerList.size(); i++) {
+            Passenger p = passengerList.get(i);
+            if (i > 0) {
+                passengersEncoded.append(",");
+            }
+            passengersEncoded.append(p.getStartNode()).append("-").append(p.getEndNode());
+        }
+
+        return "variants=" + String.join(",", variants)
+                + ";taxiPositions=" + joinInts(taxiPositions)
+                + ";passengers=" + passengersEncoded
+                + ";adjMatrix=" + joinInts(flatMatrix)
+                + ";matrixSize=" + matrixSize;
+    }
+
+    private static String joinInts(List<Integer> values) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append(values.get(i));
+        }
+        return sb.toString();
+    }
+
+    private TaxiInitData decodeTaxiInitData(String payload) {
+        String[] parts = payload.split(";");
+        int matrixSize = 0;
+        List<Integer> taxiPos = new ArrayList<>();
+        List<Passenger> pass = new ArrayList<>();
+        List<Integer> flat = new ArrayList<>();
+
+        for (String part : parts) {
+            String[] kv = part.split("=", 2);
+            if (kv.length != 2) {
+                continue;
+            }
+            switch (kv[0]) {
+                case "matrixSize":
+                    matrixSize = Integer.parseInt(kv[1]);
+                    break;
+                case "taxiPositions":
+                    taxiPos = parseIntList(kv[1]);
+                    break;
+                case "adjMatrix":
+                    flat = parseIntList(kv[1]);
+                    break;
+                case "passengers":
+                    if (!kv[1].isEmpty()) {
+                        for (String pe : kv[1].split(",")) {
+                            String[] se = pe.split("-", 2);
+                            Passenger p = new Passenger();
+                            p.setStartNode(Integer.parseInt(se[0]));
+                            p.setEndNode(Integer.parseInt(se[1]));
+                            pass.add(p);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        return new TaxiInitData(matrixSize, taxiPos, pass, flat);
+    }
+
+    private static List<Integer> parseIntList(String value) {
+        if (value == null || value.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<Integer> out = new ArrayList<>();
+        Arrays.stream(value.split(",")).forEach(s -> out.add(Integer.parseInt(s)));
+        return out;
+    }
+
+    private static final class TaxiInitData {
+        final int matrixSize;
+        final List<Integer> taxiPositions;
+        final List<Passenger> passengers;
+        final List<Integer> adjMatrixFlat;
+
+        private TaxiInitData(int matrixSize, List<Integer> taxiPositions, List<Passenger> passengers, List<Integer> adjMatrixFlat) {
+            this.matrixSize = matrixSize;
+            this.taxiPositions = taxiPositions;
+            this.passengers = passengers;
+            this.adjMatrixFlat = adjMatrixFlat;
+        }
+    }
+
 
     public static void main(String[] args) throws IOException, InterruptedException {
         Server server = ServerBuilder.forPort(8081)

@@ -16,7 +16,7 @@ public class TaskDistributorImpl extends TaskDistributorGrpc.TaskDistributorImpl
     private final ManagedChannel formatterChannel;
     private final TaskFormatterGrpc.TaskFormatterBlockingStub formatterStub;
 
-    private final Map<String, SubtaskData> workerTasks = new ConcurrentHashMap<>();
+    private final Map<String, UniversalTask> workerTasks = new ConcurrentHashMap<>();
 
     public TaskDistributorImpl() {
         this("localhost", 8081);
@@ -31,7 +31,7 @@ public class TaskDistributorImpl extends TaskDistributorGrpc.TaskDistributorImpl
 
     @Override
     public void requestSubtask(DistributorRequest request,
-                               StreamObserver<SubtaskData> responseObserver) {
+                               StreamObserver<UniversalTask> responseObserver) {
         System.out.println("Запрос от вычислятора: " + request.getWorkerId());
 
 
@@ -39,14 +39,11 @@ public class TaskDistributorImpl extends TaskDistributorGrpc.TaskDistributorImpl
 
         if (response.getHasTask()) {
 
-            SubtaskData data = SubtaskData.newBuilder()
+            UniversalTask data = UniversalTask.newBuilder()
                     .setHasTask(true)
-                    .addAllVariants(response.getVariantsList())
                     .setTaskNumber(response.getTaskNumber())
-                    .addAllTaxiPositions(response.getTaxiPositionsList())
-                    .addAllPassengers(response.getPassengersList())
-                    .addAllAdjMatrix(response.getAdjMatrixList())
-                    .setMatrixSize(response.getMatrixSize())
+                    .setTaskKind(response.getTaskKind())
+                    .setTaskPayload(response.getTaskPayload())
                     .build();
 
 
@@ -54,15 +51,22 @@ public class TaskDistributorImpl extends TaskDistributorGrpc.TaskDistributorImpl
 
             responseObserver.onNext(data);
         } else {
-            responseObserver.onNext(SubtaskData.newBuilder().setHasTask(false).build());
+            responseObserver.onNext(UniversalTask.newBuilder().setHasTask(false).build());
         }
 
         responseObserver.onCompleted();
     }
 
     @Override
-    public void submitWorkerResult(ResultRequest request, StreamObserver<ResultResponse> responseObserver) {
-        ResultResponse result = formatterStub.submitResult(request);
+    public void submitWorkerResult(UniversalResult request, StreamObserver<ResultResponse> responseObserver) {
+        ResultRequest formatterRequest = ResultRequest.newBuilder()
+                .setTaskNumber(request.getTaskNumber())
+                .setResultLabel(request.getResultLabel())
+                .setScore(request.getScore())
+                .setResultPayload(request.getResultPayload())
+                .build();
+
+        ResultResponse result = formatterStub.submitResult(formatterRequest);
         responseObserver.onNext(result);
         responseObserver.onCompleted();
     }

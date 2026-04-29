@@ -2,7 +2,7 @@ syntax = "proto3";
 
 option java_multiple_files = true;
 option java_package = "org.example.proto";
-option java_outer_classname = "TaxiProto";
+option java_outer_classname = "TaskProto";
 
 service TaskFormatter {
     rpc InitData(InitRequest) returns (InitResponse);
@@ -15,24 +15,16 @@ service TaskFormatter {
 }
 
 service TaskDistributor {
-    rpc RequestSubtask(DistributorRequest) returns (SubtaskData);
+    rpc RequestSubtask(DistributorRequest) returns (UniversalTask);
 
     rpc SendTaskToWorker(TaskAssignment) returns (AssignmentResponse);
 
-    // Прокси результата вычислятора к формирователю (агрегация минимума)
-    rpc SubmitWorkerResult(ResultRequest) returns (ResultResponse);
+    rpc SubmitWorkerResult(UniversalResult) returns (ResultResponse);
 }
 
 message InitRequest {
-    repeated int32 adjMatrix = 1;
-    int32 matrixSize = 2;
-    repeated int32 taxiPositions = 3;
-    repeated Passenger passengers = 4;
-}
-
-message Passenger {
-    int32 startNode = 1;
-    int32 endNode = 2;
+    string taskKind = 1;
+    bytes initPayload = 2;
 }
 
 message InitResponse {
@@ -44,18 +36,16 @@ message Empty {}
 
 message SubtaskResponse {
     bool hasTask = 1;
-    repeated string variants = 2;
-    int32 taskNumber = 3;
-    repeated int32 taxiPositions = 4;
-    repeated Passenger passengers = 5;
-    repeated int32 adjMatrix = 6;
-    int32 matrixSize = 7;
+    int32 taskNumber = 2;
+    string taskKind = 3;
+    bytes taskPayload = 4;
 }
 
 message ResultRequest {
     int32 taskNumber = 1;
-    string variant = 2;
-    int32 cost = 3;
+    string resultLabel = 2;
+    int64 score = 3;
+    bytes resultPayload = 4;
 }
 
 message ResultResponse {
@@ -64,8 +54,8 @@ message ResultResponse {
 
 message FinalResultResponse {
     bool ready = 1;
-    int32 minCost = 2;
-    string bestVariant = 3;
+    int64 bestScore = 2;
+    string bestLabel = 3;
     int32 bestTaskNumber = 4;
     int32 processedResults = 5;
     int32 totalTasks = 6;
@@ -75,19 +65,9 @@ message DistributorRequest {
     string workerId = 1;
 }
 
-message SubtaskData {
-    repeated string variants = 1;
-    int32 taskNumber = 2;
-    repeated int32 taxiPositions = 3;
-    repeated Passenger passengers = 4;
-    repeated int32 adjMatrix = 5;
-    int32 matrixSize = 6;
-    bool has_task = 7;
-}
-
 message TaskAssignment {
     string workerId = 1;
-    SubtaskData task = 2;
+    UniversalTask task = 2;
 }
 
 message AssignmentResponse {
@@ -96,7 +76,7 @@ message AssignmentResponse {
 }
 
 service WorkerService {
-    rpc SendTask(TaskAssignment) returns (ComputationResult);
+    rpc SendTask(TaskAssignment) returns (UniversalResult);
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
@@ -109,10 +89,21 @@ message HeartbeatResponse {
     int32 tasksProcessed = 2;
 }
 
-message ComputationResult {
+message UniversalTask {
+    bool hasTask = 1;
+    int32 taskNumber = 2;
+    string taskKind = 3;
+    bytes taskPayload = 4;
+}
+
+message UniversalResult {
     string workerId = 1;
     int32 taskNumber = 2;
-    string variant = 3;
-    int32 cost = 4;
-    int64 computationTimeMs = 5;
+    string taskKind = 3;
+    bool success = 4;
+    string message = 5;
+    string resultLabel = 6;
+    int64 score = 7;
+    bytes resultPayload = 8;
+    int64 computationTimeMs = 9;
 }
