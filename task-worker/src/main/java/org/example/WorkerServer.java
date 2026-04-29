@@ -81,15 +81,12 @@ public class WorkerServer {
 
                     long t0 = System.currentTimeMillis();
                     Object batchResult = invoker.invokeBatch(task);
-                    String variant = readStringResult(batchResult, "getResultLabel", "getBestVariant", "");
-                    int cost = readIntResult(batchResult, "getResultCost", "getMinCost", Integer.MAX_VALUE);
-                    long score = readLongResult(batchResult, "getScore", "getResultCost", "getMinCost", cost);
-                    byte[] payload = readBytesResult(batchResult, "getResultPayload", "toPayloadBytes");
+                    byte[] payload = serializeResult(batchResult);
                     long dt = System.currentTimeMillis() - t0;
 
                     System.out.println("Подзадача #" + task.getTaskNumber()
                             + " kind=" + task.getTaskKind()
-                            + " -> стоимость " + cost + " (label \"" + variant + "\", " + dt + " мс)");
+                            + " -> выполнена за " + dt + " мс");
 
                     UniversalResult resultReq = UniversalResult.newBuilder()
                             .setWorkerId(workerId)
@@ -97,8 +94,8 @@ public class WorkerServer {
                             .setTaskKind(task.getTaskKind())
                             .setSuccess(true)
                             .setMessage("OK")
-                            .setResultLabel(variant)
-                            .setScore(score)
+                            .setResultLabel("")
+                            .setScore(0)
                             .setResultPayload(com.google.protobuf.ByteString.copyFrom(payload))
                             .setComputationTimeMs(dt)
                             .build();
@@ -117,63 +114,66 @@ public class WorkerServer {
     }
 
 
-    private static String readStringResult(Object target, String preferredMethod, String fallbackMethod, String defaultValue) {
-        Object value = invokeOptionalNoArg(target, preferredMethod);
-        if (value == null) {
-            value = invokeOptionalNoArg(target, fallbackMethod);
+    private static byte[] serializeResult(Object result) {
+        if (result == null) {
+            return new byte[0];
         }
-        return value == null ? defaultValue : String.valueOf(value);
+        if (result instanceof byte[]) {
+            return (byte[]) result;
+        }
+        if (result instanceof CharSequence || result instanceof Number || result instanceof Boolean) {
+            return String.valueOf(result).getBytes(StandardCharsets.UTF_8);
+        }
+        String json = reflectiveJson(result);
+        if (!json.isEmpty()) {
+            return json.getBytes(StandardCharsets.UTF_8);
+        }
+        return String.valueOf(result).getBytes(StandardCharsets.UTF_8);
     }
 
-    private static int readIntResult(Object target, String preferredMethod, String fallbackMethod, int defaultValue) {
-        Object value = invokeOptionalNoArg(target, preferredMethod);
-        if (value == null) {
-            value = invokeOptionalNoArg(target, fallbackMethod);
+    private static String reflectiveJson(Object obj) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{");
+        boolean first = true;
+        for (Method m : obj.getClass().getMethods()) {
+            if (m.getParameterCount() != 0) {
+                continue;
+            }
+            if (m.getDeclaringClass() == Object.class) {
+                continue;
+            }
+            String name = m.getName();
+            if (!name.startsWith("get") || name.length() <= 3) {
+                continue;
+            }
+            Object value;
+            try {
+                value = m.invoke(obj);
+            } catch (Exception ignored) {
+                continue;
+            }
+            if (!(value instanceof String) && !(value instanceof Number) && !(value instanceof Boolean)) {
+                continue;
+            }
+            String field = Character.toLowerCase(name.charAt(3)) + name.substring(4);
+            if (!first) {
+                sb.append(",");
+            }
+            sb.append("\"").append(escapeJson(field)).append("\":");
+            if (value instanceof String) {
+                sb.append("\"").append(escapeJson((String) value)).append("\"");
+            } else {
+                sb.append(value);
+            }
+            first = false;
         }
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        return defaultValue;
+        sb.append("}");
+        return first ? "" : sb.toString();
     }
 
-    private static long readLongResult(Object target,
-                                       String preferredMethod,
-                                       String fallbackMethod1,
-                                       String fallbackMethod2,
-                                       long defaultValue) {
-        Object value = invokeOptionalNoArg(target, preferredMethod);
-        if (value == null) {
-            value = invokeOptionalNoArg(target, fallbackMethod1);
-        }
-        if (value == null) {
-            value = invokeOptionalNoArg(target, fallbackMethod2);
-        }
-        if (value instanceof Number) {
-            return ((Number) value).longValue();
-        }
-        return defaultValue;
-    }
-
-    private static byte[] readBytesResult(Object target, String preferredMethod, String fallbackMethod) {
-        Object value = invokeOptionalNoArg(target, preferredMethod);
-        if (value == null) {
-            value = invokeOptionalNoArg(target, fallbackMethod);
-        }
-        if (value instanceof byte[]) {
-            return (byte[]) value;
-        }
-        if (value != null) {
-            return String.valueOf(value).getBytes(StandardCharsets.UTF_8);
-        }
-        return new byte[0];
-    }
-
-    private static Object invokeOptionalNoArg(Object target, String methodName) {
-        try {
-            Method m = target.getClass().getMethod(methodName);
-            return m.invoke(target);
-        } catch (ReflectiveOperationException ignored) {
-            return null;
-        }
+    private static String escapeJson(String s) {
+        return s
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"");
     }
 }

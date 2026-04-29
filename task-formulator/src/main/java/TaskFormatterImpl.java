@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
     private static final int TASK_BATCH_SIZE = 3;
@@ -109,8 +111,9 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
 
     @Override
     public synchronized void submitResult(ResultRequest request, StreamObserver<ResultResponse> responseObserver) {
-        String resultVariant = request.getResultLabel();
-        int resultCost = (int) request.getScore();
+        ParsedWorkerResult parsed = parseWorkerResult(request);
+        String resultVariant = parsed.variant;
+        int resultCost = parsed.cost;
         System.out.println("Получен результат: задача " + request.getTaskNumber() +
                 ", вариант " + resultVariant +
                 ", стоимость " + resultCost);
@@ -145,6 +148,48 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
 
         responseObserver.onNext(response);
         responseObserver.onCompleted();
+    }
+
+    private ParsedWorkerResult parseWorkerResult(ResultRequest request) {
+        String variant = request.getResultLabel();
+        int cost = (int) request.getScore();
+        if ((!variant.isEmpty() && cost > 0) || request.getResultPayload().isEmpty()) {
+            return new ParsedWorkerResult(variant, cost);
+        }
+
+        String payloadText = request.getResultPayload().toString(StandardCharsets.UTF_8);
+        String payloadVariant = extractStringField(payloadText, "bestVariant", "resultLabel");
+        Integer payloadCost = extractIntField(payloadText, "minCost", "resultCost", "score");
+
+        if ((variant == null || variant.isEmpty()) && payloadVariant != null) {
+            variant = payloadVariant;
+        }
+        if ((cost == 0 || cost == Integer.MAX_VALUE) && payloadCost != null) {
+            cost = payloadCost;
+        }
+        return new ParsedWorkerResult(variant == null ? "" : variant, cost);
+    }
+
+    private static String extractStringField(String payload, String... keys) {
+        for (String key : keys) {
+            Pattern p = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]*)\"");
+            Matcher m = p.matcher(payload);
+            if (m.find()) {
+                return m.group(1);
+            }
+        }
+        return null;
+    }
+
+    private static Integer extractIntField(String payload, String... keys) {
+        for (String key : keys) {
+            Pattern p = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*(-?\\d+)");
+            Matcher m = p.matcher(payload);
+            if (m.find()) {
+                return Integer.parseInt(m.group(1));
+            }
+        }
+        return null;
     }
 
     @Override
@@ -307,6 +352,16 @@ public class TaskFormatterImpl extends TaskFormatterGrpc.TaskFormatterImplBase {
             this.taxiPositions = taxiPositions;
             this.passengers = passengers;
             this.adjMatrixFlat = adjMatrixFlat;
+        }
+    }
+
+    private static final class ParsedWorkerResult {
+        final String variant;
+        final int cost;
+
+        private ParsedWorkerResult(String variant, int cost) {
+            this.variant = variant;
+            this.cost = cost;
         }
     }
 

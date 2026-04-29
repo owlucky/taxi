@@ -28,9 +28,8 @@ import java.util.jar.JarFile;
 
 public final class CalculatorJarInvoker implements AutoCloseable {
 
-    private static final String TARGET_CLASS = "org.example.calculator.TargetClass";
-    private static final String TARGET_METHOD = "org.example.calculator.TargetMethod";
-    private static final String ROLE_BATCH = "batch";
+    private static final String TARGET_CLASS_ANNOTATION = "TargetClass";
+    private static final String TARGET_METHOD_ANNOTATION = "TargetMethod";
     private static final String ROLE_LIBRARY_INFO = "libraryInfo";
 
     private final Path jarPath;
@@ -54,7 +53,8 @@ public final class CalculatorJarInvoker implements AutoCloseable {
             if (r.libraryInfoMethod == null) {
                 return "в JAR нет @TargetMethod(\"" + ROLE_LIBRARY_INFO + "\")";
             }
-            return (String) r.libraryInfoMethod.invoke(null);
+            Object targetInstance = instantiateIfNeeded(r.targetClass, r.libraryInfoMethod);
+            return String.valueOf(r.libraryInfoMethod.invoke(targetInstance));
         } catch (Exception e) {
             return "ошибка getLibraryInfo: " + e.getMessage();
         }
@@ -62,14 +62,12 @@ public final class CalculatorJarInvoker implements AutoCloseable {
 
     public Object invokeBatch(UniversalTask task) throws Exception {
         Resolved r = resolve();
-        if (r.batchMethod == null) {
-            throw new IllegalStateException("в JAR нет @TargetMethod(\"" + ROLE_BATCH + "\")");
-        }
-        Method target = r.batchMethod;
+        Method target = selectTargetMethod(r, task);
         Class<?> calcClass = r.targetClass;
 
         Object[] args = buildArgsFromParamAnnotations(target, task, calcClass);
-        return target.invoke(null, args);
+        Object targetInstance = instantiateIfNeeded(calcClass, target);
+        return target.invoke(targetInstance, args);
     }
 
     private static Class<?> resolvePassengerClass(Class<?> calcClass, Method batchMethod) throws ClassNotFoundException {
@@ -141,8 +139,8 @@ public final class CalculatorJarInvoker implements AutoCloseable {
 
     private static String paramBindingKey(Parameter param) {
         for (Annotation a : param.getAnnotations()) {
-            String annName = a.annotationType().getName();
-            if (!annName.endsWith("Param")) {
+            String annSimple = a.annotationType().getSimpleName();
+            if (!"Param".equals(annSimple)) {
                 continue;
             }
             try {
@@ -152,7 +150,16 @@ public final class CalculatorJarInvoker implements AutoCloseable {
                     return (String) v;
                 }
             } catch (ReflectiveOperationException ignored) {
-                // другая аннотация с суффиксом Param
+                // no-op
+            }
+            try {
+                Method vm = a.annotationType().getMethod("paramName");
+                Object v = vm.invoke(a);
+                if (v instanceof String && !((String) v).isEmpty()) {
+                    return (String) v;
+                }
+            } catch (ReflectiveOperationException ignored) {
+                // no-op
             }
         }
         return null;
@@ -180,15 +187,6 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         }
         String raw = payload.get(key);
         if (raw == null) {
-            if ("variant".equals(key)) {
-                String variantsRaw = payload.get("variants");
-                if (variantsRaw != null) {
-                    List<String> variants = splitCsv(variantsRaw);
-                    if (variants.size() == 1) {
-                        return variants.get(0);
-                    }
-                }
-            }
             throw new IllegalArgumentException("В payload отсутствует ключ @" + key);
         }
         return convertValue(raw, paramType, genericType, payload, calcClass, method, key);
@@ -220,7 +218,7 @@ public final class CalculatorJarInvoker implements AutoCloseable {
             return parseIntMatrix(raw, payload);
         }
         if (List.class.isAssignableFrom(paramType)) {
-            return parseList(raw, genericType, calcClass, method, key);
+            return parseList(raw, genericType, calcClass, method);
         }
         return raw;
     }
@@ -249,15 +247,10 @@ public final class CalculatorJarInvoker implements AutoCloseable {
     private static Object parseList(String raw,
                                     Type genericType,
                                     Class<?> calcClass,
-                                    Method method,
-                                    String key) throws ReflectiveOperationException, ClassNotFoundException {
+                                    Method method) throws ReflectiveOperationException, ClassNotFoundException {
         Class<?> elemClass = elementClassOf(genericType);
         if (elemClass == null) {
-            if ("passengers".equals(key)) {
-                elemClass = resolvePassengerClass(calcClass, method);
-            } else {
-                return splitCsv(raw);
-            }
+            elemClass = resolvePassengerClass(calcClass, method);
         }
         if (String.class.equals(elemClass)) {
             return splitCsv(raw);
@@ -386,10 +379,10 @@ public final class CalculatorJarInvoker implements AutoCloseable {
                 } catch (Throwable ex) {
                     continue;
                 }
-                if (hasAnnotationNamed(c, TARGET_CLASS)) {
+                if (hasAnnotationNamed(c, TARGET_CLASS_ANNOTATION)) {
                     if (targetClass != null) {
                         throw new IllegalStateException(
-                                "В JAR больше одного класса с @" + simpleName(TARGET_CLASS) + ": "
+                                "В JAR больше одного класса с @" + TARGET_CLASS_ANNOTATION + ": "
                                         + targetClass.getName() + " и " + c.getName());
                     }
                     targetClass = c;
@@ -398,65 +391,90 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         }
         if (targetClass == null) {
             throw new ClassNotFoundException(
-                    "В JAR не найден класс с аннотацией " + TARGET_CLASS + " (@TargetClass)");
+                    "В JAR не найден класс с аннотацией @" + TARGET_CLASS_ANNOTATION);
         }
-        Method batch = null;
+        List<MethodRole> targetMethods = new ArrayList<>();
         Method library = null;
         for (Method m : targetClass.getMethods()) {
             String role = targetMethodRole(m);
-            if (ROLE_BATCH.equals(role)) {
-                if (batch != null) {
-                    throw new IllegalStateException("Два метода с @TargetMethod(\"" + ROLE_BATCH + "\")");
-                }
-                requireStatic(targetClass, m, ROLE_BATCH);
-                batch = m;
-            } else if (ROLE_LIBRARY_INFO.equals(role)) {
+            if (role == null) {
+                continue;
+            }
+            if (ROLE_LIBRARY_INFO.equals(role)) {
                 if (library != null) {
                     throw new IllegalStateException("Два метода с @TargetMethod(\"" + ROLE_LIBRARY_INFO + "\")");
                 }
-                requireStatic(targetClass, m, ROLE_LIBRARY_INFO);
                 library = m;
+            } else {
+                targetMethods.add(new MethodRole(m, role));
             }
         }
-        return new Resolved(targetClass, batch, library);
+        if (targetMethods.isEmpty()) {
+            throw new IllegalStateException("В JAR не найден метод с @" + TARGET_METHOD_ANNOTATION);
+        }
+        return new Resolved(targetClass, targetMethods, library);
     }
 
     private static String targetMethodRole(Method m) {
         for (Annotation a : m.getAnnotations()) {
-            if (!TARGET_METHOD.equals(a.annotationType().getName())) {
+            if (!TARGET_METHOD_ANNOTATION.equals(a.annotationType().getSimpleName())) {
                 continue;
             }
             try {
                 Method value = a.annotationType().getMethod("value");
                 Object v = value.invoke(a);
-                return v instanceof String ? (String) v : null;
+                if (v instanceof String && !((String) v).isEmpty()) {
+                    return (String) v;
+                }
+                return m.getName();
             } catch (ReflectiveOperationException e) {
-                return null;
+                return m.getName();
             }
         }
         return null;
     }
 
-    private static boolean hasAnnotationNamed(Class<?> c, String annotationFqn) {
+    private static boolean hasAnnotationNamed(Class<?> c, String annotationSimpleName) {
         for (Annotation a : c.getAnnotations()) {
-            if (annotationFqn.equals(a.annotationType().getName())) {
+            if (annotationSimpleName.equals(a.annotationType().getSimpleName())) {
                 return true;
             }
         }
         return false;
     }
 
-    private static void requireStatic(Class<?> declaringType, Method m, String role) {
-        if (!Modifier.isStatic(m.getModifiers())) {
-            throw new IllegalStateException(
-                    "Метод " + declaringType.getName() + "." + m.getName() + " с @TargetMethod(\""
-                            + role + "\") должен быть static");
+    private static Object instantiateIfNeeded(Class<?> declaringType, Method m) throws ReflectiveOperationException {
+        if (Modifier.isStatic(m.getModifiers())) {
+            return null;
         }
+        return declaringType.getDeclaredConstructor().newInstance();
     }
 
-    private static String simpleName(String fqn) {
-        int dot = fqn.lastIndexOf('.');
-        return dot < 0 ? fqn : fqn.substring(dot + 1);
+    private static Method selectTargetMethod(Resolved resolved, UniversalTask task) {
+        ParsedPayload payload = parsePayload(task);
+        String requested = payload.get("targetMethod");
+        if (requested == null || requested.isEmpty()) {
+            requested = task.getTaskKind();
+        }
+        if (requested != null && !requested.isEmpty()) {
+            for (MethodRole mr : resolved.targetMethods) {
+                if (requested.equals(mr.role) || requested.equals(mr.method.getName())) {
+                    return mr.method;
+                }
+            }
+        }
+        if (resolved.targetMethods.size() == 1) {
+            return resolved.targetMethods.get(0).method;
+        }
+        StringBuilder available = new StringBuilder();
+        for (MethodRole mr : resolved.targetMethods) {
+            if (available.length() > 0) {
+                available.append(", ");
+            }
+            available.append(mr.role).append("->").append(mr.method.getName());
+        }
+        throw new IllegalStateException(
+                "Не удалось выбрать целевой метод. Укажите taskKind/targetMethod. Доступно: " + available);
     }
 
     @Override
@@ -466,13 +484,23 @@ public final class CalculatorJarInvoker implements AutoCloseable {
 
     private static final class Resolved {
         final Class<?> targetClass;
-        final Method batchMethod;
+        final List<MethodRole> targetMethods;
         final Method libraryInfoMethod;
 
-        Resolved(Class<?> targetClass, Method batchMethod, Method libraryInfoMethod) {
+        Resolved(Class<?> targetClass, List<MethodRole> targetMethods, Method libraryInfoMethod) {
             this.targetClass = targetClass;
-            this.batchMethod = batchMethod;
+            this.targetMethods = targetMethods;
             this.libraryInfoMethod = libraryInfoMethod;
+        }
+    }
+
+    private static final class MethodRole {
+        final Method method;
+        final String role;
+
+        MethodRole(Method method, String role) {
+            this.method = method;
+            this.role = role;
         }
     }
 
