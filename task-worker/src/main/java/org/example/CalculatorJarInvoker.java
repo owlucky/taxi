@@ -19,10 +19,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
@@ -70,21 +73,6 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         return target.invoke(targetInstance, args);
     }
 
-    private static Class<?> resolvePassengerClass(Class<?> calcClass, Method batchMethod) throws ClassNotFoundException {
-        for (int i = 0; i < batchMethod.getParameterCount(); i++) {
-            Class<?> elem = listElementClass(batchMethod, i);
-            if (elem != null && elem.getSimpleName().equals("Passenger")) {
-                return elem;
-            }
-        }
-        for (Class<?> inner : calcClass.getDeclaredClasses()) {
-            if (inner.getSimpleName().equals("Passenger")) {
-                return inner;
-            }
-        }
-        throw new ClassNotFoundException("Не удалось определить класс Passenger для метода " + batchMethod.getName());
-    }
-
     private static Class<?> listElementClass(Method method, int paramIndex) {
         Type[] g = method.getGenericParameterTypes();
         if (paramIndex >= g.length) {
@@ -123,7 +111,6 @@ public final class CalculatorJarInvoker implements AutoCloseable {
                     payload,
                     params[i].getType(),
                     params[i].getParameterizedType(),
-                    calcClass,
                     method);
         }
         return out;
@@ -171,7 +158,6 @@ public final class CalculatorJarInvoker implements AutoCloseable {
             ParsedPayload payload,
             Class<?> paramType,
             Type genericType,
-            Class<?> calcClass,
             Method method) throws ReflectiveOperationException, ClassNotFoundException {
         if ("taskPayload".equals(key)) {
             return task.getTaskPayload().toByteArray();
@@ -187,16 +173,18 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         }
         String raw = payload.get(key);
         if (raw == null) {
+            if (isCustomPojoType(paramType)) {
+                return buildPojoFromPayload(paramType, key, payload);
+            }
             throw new IllegalArgumentException("В payload отсутствует ключ @" + key);
         }
-        return convertValue(raw, paramType, genericType, payload, calcClass, method, key);
+        return convertValue(raw, paramType, genericType, payload, method, key);
     }
 
     private static Object convertValue(String raw,
                                        Class<?> paramType,
                                        Type genericType,
                                        ParsedPayload payload,
-                                       Class<?> calcClass,
                                        Method method,
                                        String key) throws ReflectiveOperationException, ClassNotFoundException {
         if (String.class.equals(paramType)) {
@@ -214,11 +202,37 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         if (boolean.class.equals(paramType) || Boolean.class.equals(paramType)) {
             return Boolean.parseBoolean(raw);
         }
+        if (double.class.equals(paramType) || Double.class.equals(paramType)) {
+            return Double.parseDouble(raw);
+        }
+        if (float.class.equals(paramType) || Float.class.equals(paramType)) {
+            return Float.parseFloat(raw);
+        }
+        if (short.class.equals(paramType) || Short.class.equals(paramType)) {
+            return Short.parseShort(raw);
+        }
+        if (byte.class.equals(paramType) || Byte.class.equals(paramType)) {
+            return Byte.parseByte(raw);
+        }
+        if (char.class.equals(paramType) || Character.class.equals(paramType)) {
+            if (raw.isEmpty()) {
+                throw new IllegalArgumentException("Пустое значение для char");
+            }
+            return raw.charAt(0);
+        }
+        if (paramType.isEnum()) {
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            Object enumValue = Enum.valueOf((Class<? extends Enum>) paramType, raw);
+            return enumValue;
+        }
         if (int[][].class.equals(paramType)) {
             return parseIntMatrix(raw, payload);
         }
         if (List.class.isAssignableFrom(paramType)) {
-            return parseList(raw, genericType, calcClass, method);
+            return parseList(raw, genericType);
+        }
+        if (isCustomPojoType(paramType)) {
+            return parseObject(raw, paramType);
         }
         return raw;
     }
@@ -244,13 +258,10 @@ public final class CalculatorJarInvoker implements AutoCloseable {
         return matrix;
     }
 
-    private static Object parseList(String raw,
-                                    Type genericType,
-                                    Class<?> calcClass,
-                                    Method method) throws ReflectiveOperationException, ClassNotFoundException {
+    private static Object parseList(String raw, Type genericType) throws ReflectiveOperationException {
         Class<?> elemClass = elementClassOf(genericType);
         if (elemClass == null) {
-            elemClass = resolvePassengerClass(calcClass, method);
+            return splitCsv(raw);
         }
         if (String.class.equals(elemClass)) {
             return splitCsv(raw);
@@ -291,61 +302,171 @@ public final class CalculatorJarInvoker implements AutoCloseable {
     private static List<Object> parseObjectList(String raw, Class<?> elemClass) throws ReflectiveOperationException {
         List<Object> out = new ArrayList<>();
         List<String> items = splitCsv(raw);
-        List<Method> intSetters = intSetters(elemClass);
-        List<Field> intFields = intFields(elemClass);
-
         for (String item : items) {
-            Object instance = elemClass.getConstructor().newInstance();
-            String[] pieces = item.split("-");
-            for (int i = 0; i < pieces.length; i++) {
-                int value = Integer.parseInt(pieces[i]);
-                if (i < intSetters.size()) {
-                    intSetters.get(i).invoke(instance, value);
-                } else if (i < intFields.size()) {
-                    Field f = intFields.get(i);
-                    f.setAccessible(true);
-                    f.setInt(instance, value);
-                }
-            }
-            out.add(instance);
+            out.add(parseObject(item, elemClass));
         }
         return out;
     }
 
-    private static List<Method> intSetters(Class<?> type) {
+    private static List<Method> writableSetters(Class<?> type) {
         List<Method> setters = new ArrayList<>();
         for (Method m : type.getMethods()) {
             if (m.getName().startsWith("set")
                     && m.getParameterCount() == 1
-                    && (m.getParameterTypes()[0] == int.class || m.getParameterTypes()[0] == Integer.class)) {
+                    && m.getDeclaringClass() != Object.class) {
                 setters.add(m);
             }
         }
         setters.sort(Comparator.comparing(Method::getName));
-        Method setStart = null;
-        Method setEnd = null;
-        for (Method m : setters) {
-            if ("setStartNode".equals(m.getName())) {
-                setStart = m;
-            } else if ("setEndNode".equals(m.getName())) {
-                setEnd = m;
-            }
-        }
-        if (setStart != null && setEnd != null) {
-            return Arrays.asList(setStart, setEnd);
-        }
         return setters;
     }
 
-    private static List<Field> intFields(Class<?> type) {
+    private static List<Field> writableFields(Class<?> type) {
         List<Field> fields = new ArrayList<>();
         for (Field f : type.getDeclaredFields()) {
-            if (f.getType() == int.class || f.getType() == Integer.class) {
+            if (!java.lang.reflect.Modifier.isStatic(f.getModifiers()) && !java.lang.reflect.Modifier.isFinal(f.getModifiers())) {
                 fields.add(f);
             }
         }
-        fields.sort(Comparator.comparing(Field::getName));
         return fields;
+    }
+
+    private static Object parseObject(String raw, Class<?> type) throws ReflectiveOperationException {
+        Object instance = type.getConstructor().newInstance();
+        Map<String, String> byName = parseNamedParts(raw);
+        if (!byName.isEmpty()) {
+            populateObjectByNamedValues(instance, byName);
+            return instance;
+        }
+
+        List<String> positional = splitObjectParts(raw);
+        if (positional.isEmpty()) {
+            return instance;
+        }
+        applyPositionalValues(instance, positional);
+        return instance;
+    }
+
+    private static Object buildPojoFromPayload(Class<?> type, String keyPrefix, ParsedPayload payload) throws ReflectiveOperationException {
+        Object instance = type.getConstructor().newInstance();
+        Map<String, String> byName = payload.subMapByPrefix(keyPrefix + ".");
+        if (byName.isEmpty()) {
+            throw new IllegalArgumentException("В payload отсутствуют поля для @" + keyPrefix + " (ожидались ключи вида " + keyPrefix + ".field=value)");
+        }
+        populateObjectByNamedValues(instance, byName);
+        return instance;
+    }
+
+    private static void populateObjectByNamedValues(Object instance, Map<String, String> values) throws ReflectiveOperationException {
+        Map<String, Method> setters = new HashMap<>();
+        for (Method setter : writableSetters(instance.getClass())) {
+            setters.put(setterPropertyName(setter).toLowerCase(), setter);
+        }
+
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            String fieldName = entry.getKey();
+            String rawValue = entry.getValue();
+            Method setter = setters.get(fieldName.toLowerCase());
+            if (setter != null) {
+                Class<?> targetType = setter.getParameterTypes()[0];
+                Type targetGeneric = setter.getGenericParameterTypes()[0];
+                Object converted = convertValue(rawValue, targetType, targetGeneric, ParsedPayload.empty(), setter, fieldName);
+                setter.invoke(instance, converted);
+                continue;
+            }
+            Field field = findFieldIgnoreCase(instance.getClass(), fieldName);
+            if (field != null) {
+                field.setAccessible(true);
+                Object converted = convertValue(rawValue, field.getType(), field.getGenericType(), ParsedPayload.empty(), null, fieldName);
+                field.set(instance, converted);
+            }
+        }
+    }
+
+    private static void applyPositionalValues(Object instance, List<String> values) throws ReflectiveOperationException {
+        int index = 0;
+        Set<String> assignedProperties = new HashSet<>();
+
+        // Positional values map first to declared fields to preserve natural class order.
+        for (Field field : writableFields(instance.getClass())) {
+            if (index >= values.size()) {
+                return;
+            }
+            field.setAccessible(true);
+            Object converted = convertValue(values.get(index), field.getType(), field.getGenericType(), ParsedPayload.empty(), null, field.getName());
+            field.set(instance, converted);
+            assignedProperties.add(field.getName().toLowerCase());
+            index++;
+        }
+        if (index >= values.size()) {
+            return;
+        }
+
+        // Remaining values (if any) go to unmatched setters in stable order.
+        for (Method setter : writableSetters(instance.getClass())) {
+            if (index >= values.size()) {
+                return;
+            }
+            String propertyName = setterPropertyName(setter).toLowerCase();
+            if (assignedProperties.contains(propertyName)) {
+                continue;
+            }
+            Class<?> targetType = setter.getParameterTypes()[0];
+            Type targetGeneric = setter.getGenericParameterTypes()[0];
+            Object converted = convertValue(values.get(index), targetType, targetGeneric, ParsedPayload.empty(), setter, setter.getName());
+            setter.invoke(instance, converted);
+            index++;
+        }
+    }
+
+    private static boolean isCustomPojoType(Class<?> type) {
+        return !type.isPrimitive()
+                && !type.isArray()
+                && !String.class.equals(type)
+                && !Number.class.isAssignableFrom(type)
+                && !Boolean.class.equals(type)
+                && !Character.class.equals(type)
+                && !type.isEnum()
+                && !List.class.isAssignableFrom(type);
+    }
+
+    private static String setterPropertyName(Method setter) {
+        String name = setter.getName();
+        if (name.length() <= 3) {
+            return name;
+        }
+        return Character.toLowerCase(name.charAt(3)) + name.substring(4);
+    }
+
+    private static Field findFieldIgnoreCase(Class<?> type, String fieldName) {
+        for (Field field : type.getDeclaredFields()) {
+            if (field.getName().equalsIgnoreCase(fieldName)) {
+                return field;
+            }
+        }
+        return null;
+    }
+
+    private static List<String> splitObjectParts(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.asList(raw.split("-"));
+    }
+
+    private static Map<String, String> parseNamedParts(String raw) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (raw == null || raw.isEmpty()) {
+            return out;
+        }
+        String[] parts = raw.split(",");
+        for (String part : parts) {
+            String[] kv = part.split("[:=]", 2);
+            if (kv.length == 2 && !kv[0].isEmpty()) {
+                out.put(kv[0].trim(), kv[1].trim());
+            }
+        }
+        return out;
     }
 
     private Resolved resolve() throws IOException, ClassNotFoundException {
@@ -517,6 +638,16 @@ public final class CalculatorJarInvoker implements AutoCloseable {
 
         String get(String key) {
             return values.get(key);
+        }
+
+        Map<String, String> subMapByPrefix(String prefix) {
+            Map<String, String> out = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : values.entrySet()) {
+                if (entry.getKey().startsWith(prefix)) {
+                    out.put(entry.getKey().substring(prefix.length()), entry.getValue());
+                }
+            }
+            return out;
         }
 
         static ParsedPayload parse(String raw) {

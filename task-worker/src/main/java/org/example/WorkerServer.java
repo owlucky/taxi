@@ -33,7 +33,6 @@ public class WorkerServer {
         }
 
         if (jar == null) {
-            System.err.println("Запуск: java -jar task-worker.jar --jar путь/cost-calculator-1.0-SNAPSHOT.jar [--distributor host:port]");
             System.exit(1);
         }
 
